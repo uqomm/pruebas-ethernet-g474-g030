@@ -296,11 +296,16 @@ int main(void)
           {
               last_tick = HAL_GetTick();
 
-              /* destino = PC (192.168.1.10 : 5000) */
-              w5500_write_reg(Sn_DIPR + 0, SOCK0_BLOCK, PC_IP0);
-              w5500_write_reg(Sn_DIPR + 1, SOCK0_BLOCK, PC_IP1);
-              w5500_write_reg(Sn_DIPR + 2, SOCK0_BLOCK, PC_IP2);
-              w5500_write_reg(Sn_DIPR + 3, SOCK0_BLOCK, PC_IP3);
+              /* destino = broadcast (255.255.255.255 : 5000).
+               * Se usa broadcast (no unicast al PC) porque el unicast
+               * necesita ARP para resolver la MAC del PC, y el RX del
+               * W5500 esta fallando: nunca recibe la respuesta ARP, por
+               * lo que el paquete UDP jamas se envia. El broadcast no
+               * necesita ARP y sale directo por TX. */
+              w5500_write_reg(Sn_DIPR + 0, SOCK0_BLOCK, 255);
+              w5500_write_reg(Sn_DIPR + 1, SOCK0_BLOCK, 255);
+              w5500_write_reg(Sn_DIPR + 2, SOCK0_BLOCK, 255);
+              w5500_write_reg(Sn_DIPR + 3, SOCK0_BLOCK, 255);
               w5500_write_reg16(Sn_DPORT, SOCK0_BLOCK, UDP_PORT);
 
               udp_send("KA");
