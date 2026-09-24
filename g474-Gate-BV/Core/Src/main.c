@@ -74,7 +74,7 @@
 #define PC_IP3              10
 
 #define UDP_PORT            5000
-#define TX_INTERVAL_MS      1000   /* envio de "KA" cada 10 segundos */
+#define TX_INTERVAL_MS      10000   /* envio de "KA" cada 10 segundos */
 
 /* USER CODE END PD */
 
@@ -95,6 +95,15 @@ volatile uint8_t  g_phy_live = 0;   /* PHYCFGR leido en el bucle */
 volatile uint16_t g_rsr      = 0;   /* bytes recibidos pendientes */
 volatile uint16_t g_tx_count = 0;   /* mensajes enviados */
 volatile uint16_t g_rx_count = 0;   /* mensajes recibidos */
+
+/* Resultados del escaneo de pines (diagnostico) */
+volatile uint8_t  g_scan_found = 0;      /* 1 si encontro el W5500 */
+volatile uint8_t  g_scan_port   = 0xFF;  /* 0=GPIOA, 1=GPIOB, 2=GPIOC */
+volatile uint8_t  g_scan_pin    = 0xFF;  /* numero de pin (0..15) */
+volatile uint8_t  g_scan_ver    = 0;     /* VERSIONR leido en el ultimo intento */
+volatile uint8_t  g_scan_nrst_found = 0; /* 1 si encontro el NRST */
+volatile uint8_t  g_scan_nrst_port   = 0xFF;
+volatile uint8_t  g_scan_nrst_pin    = 0xFF;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -156,6 +165,7 @@ static void     w5500_read_buf(uint8_t block, uint16_t addr, uint8_t* data, uint
 
 /* ------- Funciones de aplicacion ------- */
 static void udp_send(const char* msg);   /* envia un mensaje UDP al destino actual */
+static void diag_scan(void);             /* diagnostico: escanea SCN del W5500 */
 
 /* USER CODE END 0 */
 
@@ -188,27 +198,21 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_UART5_Init();
-  MX_USART2_UART_Init();
-  MX_ADC3_Init();
-  MX_ADC4_Init();
-  MX_I2C1_Init();
-  MX_SPI1_Init();
-  MX_SPI2_Init();
-  MX_SPI4_Init();
-  MX_UART4_Init();
-  MX_USART3_UART_Init();
+  MX_SPI3_Init();
   /* USB CDC deshabilitado durante debug (colgaba en ISR USB_LP). Se usa SWD. */
   /* MX_USB_Device_Init(); */
   /* USER CODE BEGIN 2 */
+
+  /* --- DIAGNOSTICO (deshabilitado): ya se encontraron SCN=PA4, NRST=PB6 --- */
+  /* diag_scan(); */
 
   /* ================================================================
    * 1. Reset del W5500 y verificacion del chip
    * ================================================================ */
   w5500_hw_reset();                          /* reset por el pin NRST */
-//  w5500_write_reg(MR, COMMON_BLOCK, 0x80);   /* reset por software */
+  w5500_write_reg(MR, COMMON_BLOCK, 0x80);   /* reset por software */
   HAL_Delay(100);
-//  w5500_write_reg(MR, COMMON_BLOCK, 0x00);   /* modo normal */
+  w5500_write_reg(MR, COMMON_BLOCK, 0x00);   /* modo normal */
 
   g_ver = w5500_read_reg(VERSIONR, COMMON_BLOCK);
   if (g_ver != 0x04) {                       /* el chip debe leer 0x04 */
@@ -234,17 +238,16 @@ int main(void)
   /* ================================================================
    * 3. PHY: auto-negociacion y espera del link
    * ================================================================ */
-//  w5500_write_reg(PHYCFGR, COMMON_BLOCK, 0xF8);   /* RST=1, auto-neg, todo capaz */
-//  HAL_Delay(10);
+  w5500_write_reg(PHYCFGR, COMMON_BLOCK, 0xF8);   /* RST=1, auto-neg, todo capaz */
+  HAL_Delay(1);
   w5500_write_reg(PHYCFGR, COMMON_BLOCK, 0x78);   /* RST=0 -> reset del PHY */
-  HAL_Delay(10);
+  HAL_Delay(1);
   w5500_write_reg(PHYCFGR, COMMON_BLOCK, 0xF8);   /* RST=1 -> liberar reset */
 
   {
       uint32_t t = 0;
-      while (t < 5000) {                          /* esperar link (max ~3 s) */
-          if (w5500_read_reg(PHYCFGR, COMMON_BLOCK) & 0x01)
-        	  break;  /* LNK=1 */
+      while (t < 3000) {                          /* esperar link (max ~3 s) */
+          if (w5500_read_reg(PHYCFGR, COMMON_BLOCK) & 0x01) break;  /* LNK=1 */
           HAL_Delay(10);
           t += 10;
       }
@@ -256,15 +259,10 @@ int main(void)
    * ================================================================ */
   w5500_write_reg(Sn_RXBUF_SIZE, SOCK0_BLOCK, 2);   /* 2 KB de RX */
   w5500_write_reg(Sn_TXBUF_SIZE, SOCK0_BLOCK, 2);   /* 2 KB de TX */
-
   w5500_write_reg(Sn_MR, SOCK0_BLOCK, 0x02);        /* 0x02 = UDP */
-
   w5500_write_reg16(Sn_PORT, SOCK0_BLOCK, UDP_PORT);
-
   w5500_write_reg(Sn_CR, SOCK0_BLOCK, CR_OPEN);     /* abrir el socket */
-  // Esperar a que el W5500 procese el comando (Sn_CR vuelve a 0x00 solo)
-  while (w5500_read_reg(Sn_CR, SOCK0_BLOCK) != 0x00);
-
+  HAL_Delay(10);
   g_snmr   = w5500_read_reg(Sn_MR, SOCK0_BLOCK);    /* debe leer 0x02 */
   g_socket = w5500_read_reg(Sn_SR, SOCK0_BLOCK);    /* debe leer 0x22 (UDP) */
 
@@ -386,6 +384,86 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+/* ================================================================
+ * DIAGNOSTICO: escanea pines para encontrar el SCN del W5500.
+ *   - Libera NRST (todos los candidatos en ALTO).
+ *   - Prueba cada candidato como chip-select leyendo VERSIONR (0x04).
+ * Candidatos: GPIOA/B/C (excluye SWD PA13/PA14 y SPI3 PB3/PB4/PB5).
+ * ================================================================ */
+static void diag_scan(void)
+{
+    struct { GPIO_TypeDef* port; uint16_t pin; uint8_t port_id; } cand[] = {
+        {GPIOA, GPIO_PIN_0, 0}, {GPIOA, GPIO_PIN_1, 0}, {GPIOA, GPIO_PIN_2, 0},
+        {GPIOA, GPIO_PIN_3, 0}, {GPIOA, GPIO_PIN_4, 0}, {GPIOA, GPIO_PIN_5, 0},
+        {GPIOA, GPIO_PIN_6, 0}, {GPIOA, GPIO_PIN_7, 0}, {GPIOA, GPIO_PIN_8, 0},
+        {GPIOA, GPIO_PIN_9, 0}, {GPIOA, GPIO_PIN_10, 0}, {GPIOA, GPIO_PIN_11, 0},
+        {GPIOA, GPIO_PIN_12, 0}, {GPIOA, GPIO_PIN_15, 0},
+        {GPIOB, GPIO_PIN_0, 1}, {GPIOB, GPIO_PIN_1, 1}, {GPIOB, GPIO_PIN_2, 1},
+        {GPIOB, GPIO_PIN_6, 1}, {GPIOB, GPIO_PIN_7, 1}, {GPIOB, GPIO_PIN_8, 1},
+        {GPIOB, GPIO_PIN_9, 1}, {GPIOB, GPIO_PIN_10, 1}, {GPIOB, GPIO_PIN_11, 1},
+        {GPIOB, GPIO_PIN_12, 1}, {GPIOB, GPIO_PIN_13, 1}, {GPIOB, GPIO_PIN_14, 1},
+        {GPIOB, GPIO_PIN_15, 1},
+        {GPIOC, GPIO_PIN_13, 2}, {GPIOC, GPIO_PIN_14, 2}, {GPIOC, GPIO_PIN_15, 2},
+    };
+    const int n = (int)(sizeof(cand) / sizeof(cand[0]));
+    GPIO_InitTypeDef gi = {0};
+    uint8_t cmd[4];
+    int i;
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    gi.Mode = GPIO_MODE_OUTPUT_PP;
+    gi.Pull = GPIO_NOPULL;
+    gi.Speed = GPIO_SPEED_FREQ_HIGH;
+
+    /* Liberar NRST y deseleccionar: todos los candidatos en ALTO */
+    for (i = 0; i < n; i++) {
+        gi.Pin = cand[i].pin;
+        HAL_GPIO_Init(cand[i].port, &gi);
+        HAL_GPIO_WritePin(cand[i].port, cand[i].pin, GPIO_PIN_SET);
+    }
+
+    /* Probar cada candidato como chip-select */
+    for (i = 0; i < n; i++) {
+        cmd[0] = 0x00; cmd[1] = 0x39; cmd[2] = 0x00; cmd[3] = 0;  /* VERSIONR, read */
+        HAL_GPIO_WritePin(cand[i].port, cand[i].pin, GPIO_PIN_RESET);
+        HAL_SPI_Transmit(&hspi3, cmd, 3, 100);
+        HAL_SPI_Receive(&hspi3, &cmd[3], 1, 100);
+        HAL_GPIO_WritePin(cand[i].port, cand[i].pin, GPIO_PIN_SET);
+        g_scan_ver = cmd[3];
+        if (cmd[3] == 0x04) {
+            g_scan_found = 1;
+            g_scan_pin = cand[i].pin;
+            g_scan_port = cand[i].port_id;
+            break;
+        }
+    }
+
+    /* Encontrar NRST: con SCN fijo (PA4, el encontrado), bajar cada candidato.
+     * Si al bajarlo el VERSIONR deja de ser 0x04, ese pin es el reset. */
+    if (g_scan_found) {
+        GPIO_TypeDef* csPort = GPIOA;      /* SCN encontrado = PA4 */
+        uint16_t csPin = GPIO_PIN_4;
+        int j;
+        for (j = 0; j < n; j++) {
+            if (cand[j].port == csPort && cand[j].pin == csPin) continue;  /* saltar SCN */
+            cmd[0] = 0x00; cmd[1] = 0x39; cmd[2] = 0x00; cmd[3] = 0;
+            HAL_GPIO_WritePin(cand[j].port, cand[j].pin, GPIO_PIN_RESET);  /* reset candidate low */
+            HAL_GPIO_WritePin(csPort, csPin, GPIO_PIN_RESET);              /* SCN low */
+            HAL_SPI_Transmit(&hspi3, cmd, 3, 100);
+            HAL_SPI_Receive(&hspi3, &cmd[3], 1, 100);
+            HAL_GPIO_WritePin(csPort, csPin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(cand[j].port, cand[j].pin, GPIO_PIN_SET);
+            if (cmd[3] != 0x04) {
+                g_scan_nrst_found = 1;
+                g_scan_nrst_pin = cand[j].pin;
+                g_scan_nrst_port = cand[j].port_id;
+                break;
+            }
+        }
+    }
+}
+
 /* Envia un mensaje UDP por el socket 0.
  * ATENCION: el destino (Sn_DIPR / Sn_DPORT) debe estar seteado antes:
  *   - Para "KA"      -> se fija la IP del PC antes de llamar.
@@ -426,7 +504,7 @@ static void w5500_write_reg(uint16_t addr, uint8_t block, uint8_t data)
     cmd[2] = (block << 3) | (1 << 2) | 0x00;
     cmd[3] = data;
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(&hspi1, cmd, 4, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi3, cmd, 4, HAL_MAX_DELAY);
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_SET);
 }
 
@@ -438,8 +516,8 @@ static uint8_t w5500_read_reg(uint16_t addr, uint8_t block)
     cmd[2] = ((block << 3) & 0xF8) | (0 << 2) | 0x00;
     cmd[3] = 0;
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_RESET);
-    HAL_StatusTypeDef st1 = HAL_SPI_Transmit(&hspi1, cmd, 3, 2000);
-    HAL_StatusTypeDef st2 = HAL_SPI_Receive(&hspi1, &cmd[3], 1, 2000);
+    HAL_StatusTypeDef st1 = HAL_SPI_Transmit(&hspi3, cmd, 3, 2000);
+    HAL_StatusTypeDef st2 = HAL_SPI_Receive(&hspi3, &cmd[3], 1, 2000);
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_SET);
     if (st1 == HAL_OK && st2 == HAL_OK) return cmd[3];
     return 0;
@@ -465,8 +543,8 @@ static void w5500_write_buf(uint8_t block, uint16_t addr, uint8_t* data, uint16_
     hdr[1] = addr & 0xFF;
     hdr[2] = (block << 3) | (1 << 2) | 0x00;  /* write, VDM */
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(&hspi1, hdr, 3, HAL_MAX_DELAY);
-    HAL_SPI_Transmit(&hspi1, data, len, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi3, hdr, 3, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi3, data, len, HAL_MAX_DELAY);
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_SET);
 }
 
@@ -477,8 +555,8 @@ static void w5500_read_buf(uint8_t block, uint16_t addr, uint8_t* data, uint16_t
     hdr[1] = addr & 0xFF;
     hdr[2] = ((block << 3) & 0xF8) | (0 << 2) | 0x00;  /* read, VDM */
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(&hspi1, hdr, 3, HAL_MAX_DELAY);
-    HAL_SPI_Receive(&hspi1, data, len, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi3, hdr, 3, HAL_MAX_DELAY);
+    HAL_SPI_Receive(&hspi3, data, len, HAL_MAX_DELAY);
     HAL_GPIO_WritePin(SCN_W5500_GPIO_Port, SCN_W5500_Pin, GPIO_PIN_SET);
 }
 

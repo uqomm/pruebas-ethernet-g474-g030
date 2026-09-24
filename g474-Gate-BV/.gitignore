@@ -1,0 +1,25 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+build/
+*.o
+*.elf
+*.map
+*.hex
+*.bin
+*.su
+*.d
+*.list
+*.cyclo
+*.axf
+
+# IDE settings
+.settings/
+.metadata/
+.vscode/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,4 +1,4 @@
-# Pruebas Ethernet W5500 — STM32G474QET6 y STM32G030K8T6
+# Pruebas Ethernet W5500 — STM32G474QET6, STM32G030K8T6 y STM32G474CBT6
 
 Pruebas de comunicación Ethernet (módulo **W5500** vía SPI) entre un microcontrolador STM32 y un PC.
 
@@ -8,6 +8,7 @@ Pruebas de comunicación Ethernet (módulo **W5500** vía SPI) entre un microcon
 |---|---|---|---|
 | `Prueba_Ethernet_Rutherford/` | STM32G474QET6 | SPI1: PA5=SCK, PA6=MISO, PA7=MOSI, PA4=SCN, PC5=NRST | Keep-alive UDP `"KA"` cada 10 s + respuesta `"RECIBIDO"` |
 | `Prueba_Ethernet_G030/` | STM32G030K8T6 | SPI1: PA5=SCK, PA6=MISO, PA7=MOSI, PB0=SCN, PA8=NRST | Test de recepción UDP por broadcast |
+| `g474-Gate-BV/` | STM32G474CBT6 | SPI3: PB3=SCK, PB4=MISO, PB5=MOSI, PA4=SCN, PB6=NRST | Keep-alive UDP `"KA"` + `"RECIBIDO"` (versión SPI3) |
 
 ## Configuración de red (W5500)
 
